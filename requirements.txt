@@ -11,6 +11,7 @@ streamlit==1.52.1
 tavily-python==0.7.14
 python-dotenv==1.2.1
 chromadb==0.5.23
+mcp==1.2.0
 uvicorn==0.38.0
 fastapi==0.115.9
 pytest==8.4.2
