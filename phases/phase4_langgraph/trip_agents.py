@@ -3,6 +3,7 @@ Phase 4: Travel Agents with LangGraph - Stateful Workflow Implementation
 """
 import os
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, TypedDict, Annotated
 from datetime import date, datetime
 from dotenv import load_dotenv
@@ -307,34 +308,43 @@ class TravelAgents:
             nights = (end - start).days
             daily_budget = requirements['budget'] / num_days
             
-            # Get weather data FIRST (required for evaluation)
-            weather_info = ""
-            try:
-                weather_result = get_weather.invoke({
-                    "city": requirements['destination'],
-                    "start_date": str(requirements['trip_startdate']),
-                    "end_date": str(requirements['trip_enddate'])
-                })
-                weather_info = f"\n\n=== WEATHER FORECAST ===\n{weather_result}\n"
-            except Exception as e:
-                # Fallback to web search
-                weather_search = search_web.invoke(f"weather forecast {requirements['destination']} {requirements['trip_startdate']} to {requirements['trip_enddate']}")
-                weather_info = f"\n\n=== WEATHER FORECAST ===\n{weather_search}\n"
+            # Weather and policy are independent I/O calls (external forecast
+            # API + RAG retrieval). Both are I/O-bound and release the GIL, so
+            # run them concurrently in a thread pool instead of sequentially.
+            def _fetch_weather() -> str:
+                try:
+                    weather_result = get_weather.invoke({
+                        "city": requirements['destination'],
+                        "start_date": str(requirements['trip_startdate']),
+                        "end_date": str(requirements['trip_enddate'])
+                    })
+                    return f"\n\n=== WEATHER FORECAST ===\n{weather_result}\n"
+                except Exception:
+                    # Fallback to web search
+                    weather_search = search_web.invoke(f"weather forecast {requirements['destination']} {requirements['trip_startdate']} to {requirements['trip_enddate']}")
+                    return f"\n\n=== WEATHER FORECAST ===\n{weather_search}\n"
 
-            # Ground the plan in corporate travel policy (RAG). Retrieved eagerly
-            # so budget/cabin/booking rules are always in context, and also
-            # exposed as a tool the LLM can re-query for specifics.
-            policy_info = ""
-            try:
-                policy_result = policy_retriever.search(
-                    f"cabin class, hotel and meal caps, booking lead time and payment rules "
-                    f"for a {num_days}-day trip to {requirements['destination']} "
-                    f"with budget {requirements['budget']} {requirements['currency']}"
-                )
-                if "error" not in policy_result:
-                    policy_info = f"\n\n=== APPLICABLE TRAVEL POLICY (must comply) ===\n{policy_result['policy_context']}\n"
-            except Exception:
-                policy_info = ""
+            def _fetch_policy() -> str:
+                # Ground the plan in corporate travel policy (RAG). Retrieved
+                # eagerly so budget/cabin/booking rules are always in context,
+                # and also exposed as a tool the LLM can re-query for specifics.
+                try:
+                    policy_result = policy_retriever.search(
+                        f"cabin class, hotel and meal caps, booking lead time and payment rules "
+                        f"for a {num_days}-day trip to {requirements['destination']} "
+                        f"with budget {requirements['budget']} {requirements['currency']}"
+                    )
+                    if "error" not in policy_result:
+                        return f"\n\n=== APPLICABLE TRAVEL POLICY (must comply) ===\n{policy_result['policy_context']}\n"
+                except Exception:
+                    pass
+                return ""
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                weather_future = pool.submit(_fetch_weather)
+                policy_future = pool.submit(_fetch_policy)
+                weather_info = weather_future.result()
+                policy_info = policy_future.result()
 
             # Create budget-constrained planning prompt
             system_message = f"""Create a detailed travel itinerary that STAYS WITHIN BUDGET.
@@ -404,30 +414,29 @@ REMAINING: [Budget - Total] {requirements['currency']}
             # Execute tool calls if present
             if hasattr(response, 'tool_calls') and response.tool_calls:
                 from langchain_core.messages import ToolMessage
-                tool_results = []
-                
-                for tool_call in response.tool_calls:
-                    tool_name = tool_call['name']
-                    tool_args = tool_call['args']
-                    
-                    # Execute the tool
-                    if tool_name == 'search_flights':
-                        result = search_flights.invoke(tool_args)
-                    elif tool_name == 'search_hotels':
-                        result = search_hotels.invoke(tool_args)
-                    elif tool_name == 'search_experiences':
-                        result = search_experiences.invoke(tool_args)
-                    elif tool_name == 'get_weather':
-                        result = get_weather.invoke(tool_args)
-                    elif tool_name == 'search_web':
-                        result = search_web.invoke(tool_args)
-                    elif tool_name == 'search_travel_policy':
-                        result = search_travel_policy.invoke(tool_args)
-                    else:
-                        result = "Tool not found"
-                    
-                    tool_results.append(result)
-                
+
+                # The LLM's tool calls are independent I/O (flights, hotels,
+                # experiences, ...). Execute them concurrently in a thread pool.
+                # pool.map preserves input order, so tool_results[i] still maps
+                # to response.tool_calls[i] for the ToolMessage pairing below.
+                _tool_dispatch = {
+                    'search_flights': search_flights,
+                    'search_hotels': search_hotels,
+                    'search_experiences': search_experiences,
+                    'get_weather': get_weather,
+                    'search_web': search_web,
+                    'search_travel_policy': search_travel_policy,
+                }
+
+                def _execute_tool_call(tool_call):
+                    tool = _tool_dispatch.get(tool_call['name'])
+                    if tool is None:
+                        return "Tool not found"
+                    return tool.invoke(tool_call['args'])
+
+                with ThreadPoolExecutor(max_workers=min(4, len(response.tool_calls))) as pool:
+                    tool_results = list(pool.map(_execute_tool_call, response.tool_calls))
+
                 # Get final response with tool results
                 messages.append(response)
                 for i, result in enumerate(tool_results):
