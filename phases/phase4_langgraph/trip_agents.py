@@ -21,6 +21,7 @@ from toolkits.amadeus_hotel_search import AmadeusHotelToolkit
 from toolkits.amadeus_flight_tool import AmadeusFlightToolkit
 from toolkits.amadeus_experience_tool import AmadeusExperienceToolkit
 from toolkits.current_datetime import DateTimeTool
+from toolkits.policy_retriever import PolicyRetriever
 
 # Database and models
 import sys
@@ -35,6 +36,7 @@ hotel_toolkit = AmadeusHotelToolkit()
 flight_toolkit = AmadeusFlightToolkit()
 experience_toolkit = AmadeusExperienceToolkit()
 datetime_tool = DateTimeTool()
+policy_retriever = PolicyRetriever()  # RAG over corporate travel policy
 
 # LangGraph State Definition
 class TravelState(TypedDict):
@@ -122,6 +124,21 @@ def search_experiences(city: str) -> str:
     except Exception as e:
         return search_web(f"things to do activities attractions in {city}")
 
+@tool
+def search_travel_policy(query: str) -> str:
+    """Retrieve relevant corporate travel-policy rules (RAG) to ground the plan.
+
+    Use for questions about cabin class, booking lead time, hotel/meal caps,
+    preferred suppliers, approvals, and payment rules.
+    """
+    try:
+        result = policy_retriever.search(query)
+        if "error" in result:
+            return f"Policy lookup unavailable: {result['error']}"
+        return result.get("policy_context", "No applicable policy found.")
+    except Exception as e:
+        return f"Policy lookup error: {str(e)}"
+
 class TravelAgents:
     """Phase 4: LangGraph Travel Agents with Stateful Workflow"""
     
@@ -144,7 +161,7 @@ class TravelAgents:
         
         # Bind tools to LLM
         self.info_collector_llm = self.llm.bind_tools([search_web, get_current_datetime])
-        self.planner_llm = self.llm.bind_tools([search_flights, search_hotels, search_experiences, get_weather, search_web])
+        self.planner_llm = self.llm.bind_tools([search_flights, search_hotels, search_experiences, get_weather, search_web, search_travel_policy])
         self.optimizer_llm = self.llm.bind_tools([search_web])
     
     def _serialize_for_json(self, data: dict) -> dict:
@@ -303,7 +320,22 @@ class TravelAgents:
                 # Fallback to web search
                 weather_search = search_web.invoke(f"weather forecast {requirements['destination']} {requirements['trip_startdate']} to {requirements['trip_enddate']}")
                 weather_info = f"\n\n=== WEATHER FORECAST ===\n{weather_search}\n"
-            
+
+            # Ground the plan in corporate travel policy (RAG). Retrieved eagerly
+            # so budget/cabin/booking rules are always in context, and also
+            # exposed as a tool the LLM can re-query for specifics.
+            policy_info = ""
+            try:
+                policy_result = policy_retriever.search(
+                    f"cabin class, hotel and meal caps, booking lead time and payment rules "
+                    f"for a {num_days}-day trip to {requirements['destination']} "
+                    f"with budget {requirements['budget']} {requirements['currency']}"
+                )
+                if "error" not in policy_result:
+                    policy_info = f"\n\n=== APPLICABLE TRAVEL POLICY (must comply) ===\n{policy_result['policy_context']}\n"
+            except Exception:
+                policy_info = ""
+
             # Create budget-constrained planning prompt
             system_message = f"""Create a detailed travel itinerary that STAYS WITHIN BUDGET.
 
@@ -315,12 +347,15 @@ Total Budget: {requirements['budget']} {requirements['currency']}
 Daily Budget: {daily_budget:.2f} {requirements['currency']}
 
 {weather_info}
+{policy_info}
 
 === CRITICAL REQUIREMENTS ===
 1. Total cost MUST be ≤ {requirements['budget']} {requirements['currency']}
 2. Use search_flights, search_hotels, search_experiences tools for real data
 3. Select budget-appropriate options (economy flights, mid-range hotels)
-4. Provide COMPLETE cost breakdown
+4. Comply with the APPLICABLE TRAVEL POLICY above; call search_travel_policy if
+   you need to confirm a specific rule. Flag any unavoidable policy conflict.
+5. Provide COMPLETE cost breakdown
 
 === REQUIRED OUTPUT FORMAT ===
 
@@ -386,6 +421,8 @@ REMAINING: [Budget - Total] {requirements['currency']}
                         result = get_weather.invoke(tool_args)
                     elif tool_name == 'search_web':
                         result = search_web.invoke(tool_args)
+                    elif tool_name == 'search_travel_policy':
+                        result = search_travel_policy.invoke(tool_args)
                     else:
                         result = "Tool not found"
                     
