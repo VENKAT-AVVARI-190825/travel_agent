@@ -12,3 +12,6 @@ venv/
 .DS_Store
 .vscode/
 *.log
+
+# RAG vector index (rebuild with: python rag/ingest_policies.py)
+rag/chroma_db/
