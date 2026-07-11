@@ -8,6 +8,7 @@ Class and methods are documented for agent/tool integration.
 
 from amadeus import Client, ResponseError
 import os
+import logging
 from typing import List, Dict, Any, Optional
 try:
     from config import AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET
@@ -17,6 +18,13 @@ except ImportError:
     load_dotenv()
     AMADEUS_CLIENT_ID = os.getenv("AMADEUS_CLIENT_ID")
     AMADEUS_CLIENT_SECRET = os.getenv("AMADEUS_CLIENT_SECRET")
+
+try:
+    from toolkits._amadeus_common import call_with_retry
+except ImportError:
+    from _amadeus_common import call_with_retry
+
+logger = logging.getLogger(__name__)
 
 class AmadeusFlightToolkit:
     """
@@ -44,11 +52,15 @@ class AmadeusFlightToolkit:
             Optional[str]: IATA city code if found, else None.
         """
         try:
-            response = self.amadeus.reference_data.locations.get(keyword=city_name, subType='CITY')
+            response = call_with_retry(
+                "get_city_code",
+                self.amadeus.reference_data.locations.get,
+                keyword=city_name, subType='CITY'
+            )
             locations = response.data
             return locations[0]['iataCode'] if locations else None
         except ResponseError as error:
-            print(f"City code failed: {error}")
+            logger.error("City code lookup failed for '%s': %s", city_name, error)
             return None
 
     def flight_search(
@@ -86,7 +98,11 @@ class AmadeusFlightToolkit:
             }
             if return_date:
                 search_params["returnDate"] = return_date
-            response = self.amadeus.shopping.flight_offers_search.get(**search_params)
+            response = call_with_retry(
+                "flight_offers_search",
+                self.amadeus.shopping.flight_offers_search.get,
+                **search_params
+            )
             offers = response.data if response and hasattr(response, 'data') else []
             if not offers:
                 print("No flight offers found.")
@@ -142,7 +158,7 @@ class AmadeusFlightToolkit:
                 print("-------------------\n")
             return offers
         except ResponseError as error:
-            print(f"Flight search failed: {error.response.body}")
+            logger.error("Flight search failed: %s", getattr(error.response, 'body', error))
             return []
 
 if __name__ == "__main__":

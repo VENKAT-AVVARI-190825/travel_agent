@@ -8,6 +8,7 @@ Class and methods are documented for agent/tool integration.
 
 from amadeus import Client, ResponseError
 import os
+import logging
 from typing import List, Tuple, Dict, Any, Optional
 try:
     from ..config import AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET
@@ -17,6 +18,13 @@ except ImportError:
     load_dotenv()
     AMADEUS_CLIENT_ID = os.getenv("AMADEUS_CLIENT_ID")
     AMADEUS_CLIENT_SECRET = os.getenv("AMADEUS_CLIENT_SECRET")
+
+try:
+    from toolkits._amadeus_common import call_with_retry
+except ImportError:
+    from _amadeus_common import call_with_retry
+
+logger = logging.getLogger(__name__)
 
 class AmadeusHotelToolkit:
     """
@@ -44,11 +52,15 @@ class AmadeusHotelToolkit:
             Optional[str]: IATA city code if found, else None.
         """
         try:
-            response = self.amadeus.reference_data.locations.get(keyword=city_name, subType='CITY')
+            response = call_with_retry(
+                "get_city_code",
+                self.amadeus.reference_data.locations.get,
+                keyword=city_name, subType='CITY'
+            )
             locations = response.data
             return locations[0]['iataCode'] if locations else None
         except ResponseError as error:
-            print(f"City code failed: {error}")
+            logger.error("City code lookup failed for '%s': %s", city_name, error)
             return None
 
     def hotel_list(self, city_name: str, radius: int = 5) -> Tuple[List[str], List[Dict[str, Any]]]:
@@ -62,15 +74,19 @@ class AmadeusHotelToolkit:
         """
         city_code = self.get_city_code(city_name)
         if not city_code:
-            print(f"City '{city_name}' not found.")
+            logger.warning("City '%s' not found for hotel list.", city_name)
             return [], []
         try:
-            response = self.amadeus.reference_data.locations.hotels.by_city.get(cityCode=city_code, radius=radius, radiusUnit="KM")
+            response = call_with_retry(
+                "hotel_list_by_city",
+                self.amadeus.reference_data.locations.hotels.by_city.get,
+                cityCode=city_code, radius=radius, radiusUnit="KM"
+            )
             hotels = response.data
             hotel_ids = [hotel.get("hotelId") for hotel in hotels]
             return hotel_ids, hotels
         except ResponseError as error:
-            print(f"Hotel list failed: {error.response.body}")
+            logger.error("Hotel list failed for '%s': %s", city_name, getattr(error.response, 'body', error))
             return [], []
 
     def extract_hotel_info(self, offer: dict) -> None:
@@ -159,7 +175,9 @@ class AmadeusHotelToolkit:
         import json
         try:
             id_string = ",".join(hotel_ids)
-            response = self.amadeus.shopping.hotel_offers_search.get(
+            response = call_with_retry(
+                "hotel_offers_search",
+                self.amadeus.shopping.hotel_offers_search.get,
                 hotelIds=id_string,
                 checkInDate=check_in_date,
                 checkOutDate=check_out_date,
@@ -210,7 +228,7 @@ class AmadeusHotelToolkit:
                 print("========================\n")
             return offers
         except ResponseError as error:
-            print(f"Hotel search failed: {error.response.body}")
+            logger.error("Hotel search failed: %s", getattr(error.response, 'body', error))
             return []
 
 
