@@ -55,15 +55,14 @@ class AutoGenTripOrchestrator:
                 previous_messages = db_utils.load_chat_history(existing_trip_id)
                 
                 # Also get any messages saved before trip creation (trip_id=None)
-                conn = db_utils.get_connection()
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT role, content FROM chat_history 
-                    WHERE trip_id=? AND user_id=? AND phase=?
-                    ORDER BY created_at
-                """, (existing_trip_id, user_id, "phase3_autogen"))
-                all_messages = [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
-                conn.close()
+                with db_utils.get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT role, content FROM chat_history
+                        WHERE trip_id=? AND user_id=? AND phase=?
+                        ORDER BY created_at
+                    """, (existing_trip_id, user_id, "phase3_autogen"))
+                    all_messages = [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
                 
                 # Combine all previous user messages with new input
                 all_user_inputs = []
