@@ -157,9 +157,25 @@ class TravelAgents:
         
         if base_url:
             llm_config["openai_api_base"] = base_url
-        
+
+        # Creative LLM (temperature 0.7): itinerary writing, where variety is fine.
         self.llm = ChatOpenAI(**llm_config)
-        
+
+        # Deterministic LLM for STRUCTURED EXTRACTION (requirement parsing).
+        # temperature=0 + a fixed seed make the same request parse to the same
+        # fields, so runs are reproducible and bug reports are debuggable.
+        # Reproducibility config is recorded for traceability (see EXTRACTOR_CONFIG).
+        self.EXTRACTOR_SEED = 42
+        extractor_config = dict(llm_config)
+        extractor_config["temperature"] = 0
+        extractor_config["seed"] = self.EXTRACTOR_SEED
+        self.extractor_llm = ChatOpenAI(**extractor_config)
+        self.EXTRACTOR_CONFIG = {
+            "model": extractor_config["model"],
+            "temperature": 0,
+            "seed": self.EXTRACTOR_SEED,
+        }
+
         # Bind tools to LLM
         self.info_collector_llm = self.llm.bind_tools([search_web, get_current_datetime])
         self.planner_llm = self.llm.bind_tools([search_flights, search_hotels, search_experiences, get_weather, search_web, search_travel_policy])
@@ -256,8 +272,14 @@ class TravelAgents:
                 chat_msg = ChatHistory(trip_id=new_trip_id, user_id=user_id, role="assistant", phase="phase4_langgraph", content=response_msg)
                 db_utils.save_chat_message_service(chat_msg)
                 
-                # Log success with serialized data
-                db_utils.log_action(new_trip_id, user_id, "collect_travel_info_complete", requirements_dict, "phase4_langgraph")
+                # Log success with serialized data + reproducibility metadata:
+                # the extractor's model/temperature/seed and a hash of the exact
+                # input, so any parse can be reproduced and audited later.
+                import hashlib
+                log_payload = dict(requirements_dict)
+                log_payload["extractor_config"] = self.EXTRACTOR_CONFIG
+                log_payload["input_sha256"] = hashlib.sha256(combined_input.encode("utf-8")).hexdigest()
+                db_utils.log_action(new_trip_id, user_id, "collect_travel_info_complete", log_payload, "phase4_langgraph")
                 
                 return {
                     **state,
@@ -615,7 +637,9 @@ Text: {text}
 Return ONLY the JSON object, no other text."""
         
         try:
-            response = self.llm.invoke(extraction_prompt)
+            # Use the deterministic (temperature=0, seeded) extractor, NOT the
+            # creative LLM: parsing must be reproducible for the same input.
+            response = self.extractor_llm.invoke(extraction_prompt)
             response_text = response.content.strip()
             
             # Remove markdown code blocks if present
