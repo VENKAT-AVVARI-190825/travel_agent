@@ -18,7 +18,6 @@ if project_root not in sys.path:
 from fastapi import FastAPI
 from typing import Optional, List
 from api.datamodels import HotelSuggestion, FlightSuggestion, ApprovalRequest, TripPlanModel, TravelPlan
-from api.tools import hotel_search_tool, flight_search_tool, weather_lookup_tool, datetime_tool_func, local_experience_tool
 from db import db_utils
 
 # Import orchestrators
