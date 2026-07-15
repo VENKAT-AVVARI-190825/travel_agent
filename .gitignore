@@ -15,3 +15,4 @@ venv/
 
 # RAG vector index (rebuild with: python rag/ingest_policies.py)
 rag/chroma_db/
+interview_pre/
