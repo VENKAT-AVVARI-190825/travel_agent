@@ -93,7 +93,12 @@ Your goal: Create detailed travel itineraries with flights, hotels, activities, 
         
 Propose creative options, defend planning decisions, and adapt based on team feedback. Always use tools to find real options.
         
-If any tool fails, immediately use web search to find alternative information. Never return empty results.""",
+If any tool fails, immediately use web search to find alternative information. Never return empty results.
+
+Tool usage rules:
+- Call each tool at most ONCE per response
+- Do not repeat the same tool call with the same arguments
+- If a tool returns results, use them directly — do not call the same tool again""",
         llm_config={"config_list": config_list, "temperature": 0.8},
         function_map={
             "search_flights": search_flights,

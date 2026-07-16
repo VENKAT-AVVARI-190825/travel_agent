@@ -116,13 +116,15 @@ class LangGraphTripOrchestrator:
                 user_input=user_input,
                 user_id=user_id,
                 trip_id=existing_trip_id,
-                requirements=previous_requirements,  # Pass previous requirements for multi-turn
+                requirements=previous_requirements,
                 travel_plan=None,
                 optimization_results=None,
                 approval_status=None,
                 error_message=None,
                 next_step="collect_travel_info",
-                workflow_complete=False
+                workflow_complete=False,
+                tool_call_count=0,
+                node_visit_count={}
             )
             
             # Execute workflow with checkpoints

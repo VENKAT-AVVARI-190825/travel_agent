@@ -53,6 +53,8 @@ class TravelState(TypedDict):
     error_message: Optional[str]
     next_step: str
     workflow_complete: bool
+    tool_call_count: int        # tracks total tool calls across all nodes
+    node_visit_count: Dict      # tracks how many times each node has been visited
 
 # Tool functions for LangGraph
 @tool
@@ -314,6 +316,17 @@ class TravelAgents:
             user_id = state["user_id"]
             trip_id = state["trip_id"]
             thread_id = f"trip_{user_id}_{trip_id}"
+
+            # Guard: prevent this node from running more than 3 times in one workflow
+            node_visits = state.get("node_visit_count", {})
+            visit_count = node_visits.get("plan_travel_itinerary", 0)
+            if visit_count >= 3:
+                return {
+                    **state,
+                    "error_message": "Planner node visit limit reached (max 3). Possible loop detected.",
+                    "next_step": "error_recovery"
+                }
+            node_visits = {**node_visits, "plan_travel_itinerary": visit_count + 1}
             
             # Log state transition
             db_utils.log_action(trip_id, user_id, "state_transition", {
@@ -437,10 +450,14 @@ REMAINING: [Budget - Total] {requirements['currency']}
             if hasattr(response, 'tool_calls') and response.tool_calls:
                 from langchain_core.messages import ToolMessage
 
-                # The LLM's tool calls are independent I/O (flights, hotels,
-                # experiences, ...). Execute them concurrently in a thread pool.
-                # pool.map preserves input order, so tool_results[i] still maps
-                # to response.tool_calls[i] for the ToolMessage pairing below.
+                MAX_TOOL_CALLS = 6  # one per tool type — prevent runaway tool use
+                tool_calls = response.tool_calls[:MAX_TOOL_CALLS]
+                if len(response.tool_calls) > MAX_TOOL_CALLS:
+                    db_utils.log_action(trip_id, user_id, "tool_calls_capped", {
+                        "requested": len(response.tool_calls),
+                        "allowed": MAX_TOOL_CALLS
+                    }, "phase4_langgraph")
+
                 _tool_dispatch = {
                     'search_flights': search_flights,
                     'search_hotels': search_hotels,
@@ -450,19 +467,29 @@ REMAINING: [Budget - Total] {requirements['currency']}
                     'search_travel_policy': search_travel_policy,
                 }
 
+                # Deduplicate tool calls — same tool name + same args = skip duplicate
+                seen = set()
+                deduped_tool_calls = []
+                for tc in tool_calls:
+                    key = (tc['name'], json.dumps(tc['args'], sort_keys=True))
+                    if key not in seen:
+                        seen.add(key)
+                        deduped_tool_calls.append(tc)
+
                 def _execute_tool_call(tool_call):
                     tool = _tool_dispatch.get(tool_call['name'])
                     if tool is None:
                         return "Tool not found"
                     return tool.invoke(tool_call['args'])
 
-                with ThreadPoolExecutor(max_workers=min(4, len(response.tool_calls))) as pool:
-                    tool_results = list(pool.map(_execute_tool_call, response.tool_calls))
+                with ThreadPoolExecutor(max_workers=min(4, len(deduped_tool_calls))) as pool:
+                    tool_results = list(pool.map(_execute_tool_call, deduped_tool_calls))
+                tool_calls = deduped_tool_calls  # use deduped list for ToolMessage pairing
 
                 # Get final response with tool results
                 messages.append(response)
                 for i, result in enumerate(tool_results):
-                    messages.append(ToolMessage(content=str(result), tool_call_id=response.tool_calls[i]['id']))
+                    messages.append(ToolMessage(content=str(result), tool_call_id=tool_calls[i]['id']))
                 
                 final_response = self.planner_llm.invoke(messages)
                 response_content = final_response.content
@@ -501,7 +528,9 @@ REMAINING: [Budget - Total] {requirements['currency']}
                 **state,
                 "travel_plan": travel_plan.model_dump(),
                 "next_step": "optimize_travel_plan",
-                "messages": state["messages"] + [response]
+                "messages": state["messages"] + [response],
+                "tool_call_count": state.get("tool_call_count", 0) + len(deduped_tool_calls),
+                "node_visit_count": node_visits
             }
             
         except Exception as e:
