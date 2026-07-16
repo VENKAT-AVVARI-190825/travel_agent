@@ -19,7 +19,7 @@ from api.datamodels import Trip, TripRequirements, TravelPlan, HotelSuggestion, 
 
 # Import agents
 from phases.phase3_autogen.trip_agents import (
-    create_info_collector, create_planner, create_optimizer, create_user_proxy,
+    create_planner, create_optimizer, create_user_proxy,
     config_list
 )
 from autogen import GroupChat, GroupChatManager
@@ -32,7 +32,6 @@ class AutoGenTripOrchestrator:
     - Ensures outputs match required data models.
     """
     def __init__(self):
-        self.info_collector = create_info_collector()
         self.planner = create_planner()
         self.optimizer = create_optimizer()
         self.user_proxy = create_user_proxy()

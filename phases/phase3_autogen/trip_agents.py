@@ -7,7 +7,6 @@ from toolkits.weather_tool import WeatherTool
 from toolkits.amadeus_hotel_search import AmadeusHotelToolkit
 from toolkits.amadeus_flight_tool import AmadeusFlightToolkit
 from toolkits.amadeus_experience_tool import AmadeusExperienceToolkit
-from toolkits.current_datetime import DateTimeTool
 
 load_dotenv()
 
@@ -17,19 +16,8 @@ weather_tool = WeatherTool()
 hotel_toolkit = AmadeusHotelToolkit()
 flight_toolkit = AmadeusFlightToolkit()
 experience_toolkit = AmadeusExperienceToolkit()
-datetime_tool = DateTimeTool()
 
 # Tool functions for AutoGen
-def get_current_date() -> str:
-    """Get current date"""
-    try:
-        result = datetime_tool.get_current_datetime()
-        if "error" in result:
-            return f"DateTime error: {result['error']}"
-        return result.get('current_date', '2024-01-15')
-    except Exception as e:
-        return f"DateTime error: {str(e)}"
-
 def search_web(query: str) -> str:
     """Search the web for travel information"""
     try:
@@ -39,26 +27,6 @@ def search_web(query: str) -> str:
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Search error: {str(e)}"
-
-def web_search(query: str) -> str:
-    """Search the web for travel information"""
-    try:
-        result = web_search_service.search(query)
-        if "error" in result:
-            return f"Search failed: {result['error']}"
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Search error: {str(e)}"
-
-def get_current_datetime() -> str:
-    """Get current date and time"""
-    try:
-        result = datetime_tool.get_current_datetime()
-        if "error" in result:
-            return f"DateTime error: {result['error']}"
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"DateTime error: {str(e)}"
 
 def get_weather(city: str, start_date: str, end_date: str) -> str:
     """Get weather forecast for a city"""
@@ -114,27 +82,6 @@ config_list = [{
 }]
 
 # Create agents
-def create_info_collector():
-    return AssistantAgent(
-        name="InfoCollector",
-        system_message="""You are a Travel Requirements Specialist. Your role is to engage in conversation to extract and validate complete travel requirements.
-        
-Personality: Inquisitive, thorough, and detail-oriented. Ask clarifying questions through natural conversation.
-        
-Your goal: Extract complete trip requirements including origin, destination, dates, travelers, budget, and preferences.
-        
-When information is missing or unclear, ask specific follow-up questions. Validate information and debate with other agents when information conflicts.
-        
-Always use tools to verify information when needed.""",
-        llm_config={"config_list": config_list, "temperature": 0.7},
-        function_map={
-            "search_web": search_web,
-            "get_current_date": get_current_date,
-            "web_search": web_search,
-            "get_current_datetime": get_current_datetime
-        }
-    )
-
 def create_planner():
     return AssistantAgent(
         name="Planner",
